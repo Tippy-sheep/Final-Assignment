@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>北京PM2.5智能监测系统</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: #050505;
+            color: #e0e0e0;
+            font-family: 'Consolas', monospace;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .top-bar {
+            background: #0a0a0a;
+            border-bottom: 2px solid #00ff00;
+            padding: 12px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .sys-title {
+            color: #00ff00;
+            font-weight: bold;
+            font-size: 16px;
+        }
+
+        .led {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ff3333;
+            box-shadow: 0 0 8px #ff3333;
+            display: inline-block;
+        }
+
+        .led.online {
+            background: #00ff00;
+            box-shadow: 0 0 10px #00ff00;
+        }
+
+        .main-container {
+            display: flex;
+            height: calc(100vh - 50px);
+            padding: 15px;
+            gap: 15px;
+        }
+
+        .chart-panel {
+            flex: 3;
+            background: #050505;
+            border: 1px solid #222;
+            border-radius: 8px;
+            position: relative;
+        }
+
+        .info-panel {
+            flex: 1;
+            background: #0a0a0a;
+            border: 1px solid #222;
+            border-radius: 8px;
+            padding: 15px;
+            overflow-y: auto;
+        }
+
+        .data-card {
+            background: #111;
+            border-left: 4px solid;
+            padding: 12px;
+            margin-bottom: 12px;
+            border-radius: 4px;
+        }
+
+        .data-card.pm25 { border-left-color: #ff4444; }
+        .data-card.pred { border-left-color: #44ff44; }
+        .data-card.env { border-left-color: #ffaa44; }
+
+        .data-label {
+            font-size: 11px;
+            color: #888;
+            margin-bottom: 5px;
+        }
+
+        .data-value {
+            font-size: 28px;
+            font-weight: bold;
+        }
+
+        .data-value.red { color: #ff4444; }
+        .data-value.green { color: #44ff44; }
+
+        .grid line { stroke: #1a1a1a; }
+        .axis text { fill: #555; font-size: 9px; }
+        .axis path, .axis line { stroke: #333; }
+
+        .line-actual {
+            fill: none;
+            stroke: #ff4444;
+            stroke-width: 2px;
+        }
+
+        .line-predict {
+            fill: none;
+            stroke: #44ff44;
+            stroke-width: 2px;
+            stroke-dasharray: 6,4;
+        }
+
+        .badge {
+            background: #1a1a1a;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .status-row {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .error-text {
+            font-size: 14px;
+            color: #ffaa44;
+        }
+    </style>
+</head>
+<body>
+    <div class="top-bar">
+        <div class="sys-title">🌍 PM2.5 INTELLIGENT MONITORING | BEIJING</div>
+        <div class="status-row">
+            <div class="badge" id="model-badge">MODEL: LOADING</div>
+            <span id="status-text" style="color:#ff3333">● OFFLINE</span>
+            <div class="led" id="led-bulb"></div>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <div class="chart-panel">
+            <div style="position:absolute; top:10px; left:15px; font-size:10px; color:#666; z-index:10;">
+                📊 红色实线=实际PM2.5 &nbsp; 绿色虚线=预测值
+            </div>
+            <div id="chart" style="width:100%; height:100%;"></div>
+        </div>
+
+        <div class="info-panel">
+            <div class="data-card pm25">
+                <div class="data-label">当前PM2.5浓度</div>
+                <div class="data-value red" id="pm25-current">--</div>
+                <div class="data-label" style="margin-top:8px">神经网络预测</div>
+                <div class="data-value green" id="pm25-predict">--</div>
+                <div id="aqi-info" style="margin-top:8px; font-size:12px"></div>
+            </div>
+
+            <div class="data-card env">
+                <div class="data-label">环境特征</div>
+                <div>🌡️ 温度: <span id="temp">--</span> °C</div>
+                <div>💨 风速: <span id="wind">--</span> m/s</div>
+                <div>💧 露点: <span id="dewp">--</span> °C</div>
+                <div>🔽 气压: <span id="pres">--</span> hPa</div>
+                <div>💦 湿度: <span id="humi">--</span> %</div>
+            </div>
+
+            <div class="data-card" style="border-left-color:#ffaa44">
+                <div class="data-label">性能指标</div>
+                <div>⚡ 推理延迟: <span id="inference-time">--</span> ms</div>
+                <div>📡 端到端延迟: <span id="latency">--</span> ms</div>
+                <div>💻 CPU占用: <span id="cpu">--</span> %</div>
+                <div>🧠 内存占用: <span id="memory">--</span> MB</div>
+                <div style="margin-top:8px">📊 预测误差: <span id="error" style="color:#ffaa44">--</span> μg/m³</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 初始化图表
+        const container = document.getElementById('chart');
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+        const margin = { top: 30, right: 30, bottom: 30, left: 50 };
+        const innerWidth = width - margin.left - margin.right;
+        const innerHeight = height - margin.top - margin.bottom;
+
+        const svg = d3.select('#chart').append('svg')
+            .attr('width', width)
+            .attr('height', height);
+
+        const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+
+        const xScale = d3.scaleLinear().domain([0, 149]).range([0, innerWidth]);
+        const yScale = d3.scaleLinear().domain([0, 300]).range([innerHeight, 0]);
+
+        // 网格
+        g.append('g').attr('class', 'grid')
+            .call(d3.axisLeft(yScale).ticks(6).tickSize(-innerWidth).tickFormat(''));
+        g.append('g').attr('class', 'grid')
+            .attr('transform', `translate(0,${innerHeight})`)
+            .call(d3.axisBottom(xScale).ticks(10).tickSize(-innerHeight).tickFormat(''));
+
+        // 坐标轴
+        g.append('g').attr('class', 'axis').call(d3.axisLeft(yScale).ticks(6));
+        g.append('g').attr('class', 'axis')
+            .attr('transform', `translate(0,${innerHeight})`)
+            .call(d3.axisBottom(xScale).ticks(10));
+
+        // 阈值线
+        g.append('line').attr('stroke', '#ffaa00').attr('stroke-dasharray', '4,4')
+            .attr('x1', 0).attr('x2', innerWidth)
+            .attr('y1', yScale(75)).attr('y2', yScale(75));
+
+        // 线条
+        const lineActual = d3.line()
+            .x((d, i) => xScale(i))
+            .y(d => yScale(d.pm25_actual));
+        const linePredict = d3.line()
+            .x((d, i) => xScale(i))
+            .y(d => yScale(d.pm25_predict));
+
+        g.append('path').attr('class', 'line-actual');
+        g.append('path').attr('class', 'line-predict');
+
+        const pathActual = g.select('.line-actual');
+        const pathPredict = g.select('.line-predict');
+
+        let dataBuffer = [];
+        const MAX_POINTS = 150;
+
+        // DOM元素
+        const domModel = document.getElementById('model-badge');
+        const domStatus = document.getElementById('status-text');
+        const domLed = document.getElementById('led-bulb');
+        const domPm25 = document.getElementById('pm25-current');
+        const domPred = document.getElementById('pm25-predict');
+        const domTemp = document.getElementById('temp');
+        const domWind = document.getElementById('wind');
+        const domDewp = document.getElementById('dewp');
+        const domPres = document.getElementById('pres');
+        const domHumi = document.getElementById('humi');
+        const domInfTime = document.getElementById('inference-time');
+        const domLatency = document.getElementById('latency');
+        const domCpu = document.getElementById('cpu');
+        const domMemory = document.getElementById('memory');
+        const domError = document.getElementById('error');
+        const domAqi = document.getElementById('aqi-info');
+
+        function getAQILevel(pm25) {
+            if (pm25 <= 35) return { level: '优', color: '#00ff00' };
+            if (pm25 <= 75) return { level: '良', color: '#88ff88' };
+            if (pm25 <= 115) return { level: '轻度污染', color: '#ffaa44' };
+            if (pm25 <= 150) return { level: '中度污染', color: '#ff8844' };
+            if (pm25 <= 250) return { level: '重度污染', color: '#ff4444' };
+            return { level: '严重污染', color: '#ff0044' };
+        }
+
+        let reconnectAttempts = 0;
+
+        function connect() {
+            const ws = new WebSocket('ws://127.0.0.1:8765');
+
+            ws.onopen = () => {
+                domStatus.innerHTML = '● ONLINE';
+                domStatus.style.color = '#00ff00';
+                domLed.classList.add('online');
+                reconnectAttempts = 0;
+                console.log('[连接] 已连接到边缘服务器');
+            };
+
+            ws.onmessage = (e) => {
+                const d = JSON.parse(e.data);
+
+                domModel.innerHTML = `MODEL: [${d.model_type}]`;
+                domPm25.innerHTML = d.pm25_actual.toFixed(1);
+                domPred.innerHTML = d.pm25_predict.toFixed(1);
+                domTemp.innerHTML = d.temperature.toFixed(1);
+                domWind.innerHTML = d.wind_speed.toFixed(1);
+                domDewp.innerHTML = d.humidity_dewp.toFixed(1);
+                domPres.innerHTML = d.pressure.toFixed(0);
+                domHumi.innerHTML = d.humidity.toFixed(1);
+                domInfTime.innerHTML = d.inference_time_ms.toFixed(1);
+                domLatency.innerHTML = d.latency_ms.toFixed(1);
+                domCpu.innerHTML = d.cpu_usage_percent.toFixed(1);
+                domMemory.innerHTML = d.memory_used_mb.toFixed(0);
+                domError.innerHTML = d.error_abs.toFixed(2);
+
+                const aqi = getAQILevel(d.pm25_actual);
+                domAqi.innerHTML = `空气质量: <span style="color:${aqi.color}">${aqi.level}</span>`;
+
+                dataBuffer.push(d);
+                if (dataBuffer.length > MAX_POINTS) dataBuffer.shift();
+
+                pathActual.datum(dataBuffer).attr('d', lineActual);
+                pathPredict.datum(dataBuffer).attr('d', linePredict);
+            };
+
+            ws.onclose = () => {
+                domStatus.innerHTML = '● OFFLINE';
+                domStatus.style.color = '#ff3333';
+                domLed.classList.remove('online');
+                reconnectAttempts++;
+                setTimeout(connect, Math.min(5000, 1000 * reconnectAttempts));
+                console.log(`[重连] ${reconnectAttempts}次尝试...`);
+            };
+
+            ws.onerror = (err) => {
+                console.error('[错误]', err);
+            };
+        }
+
+        connect();
+
+        window.addEventListener('resize', () => location.reload());
+    </script>
+</body>
+</html>
